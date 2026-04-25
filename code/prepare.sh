@@ -34,7 +34,7 @@ declare -A FILE_MAPPINGS=(
     ["e1000_main.c"]="drivers/net/ethernet/intel/e1000/e1000_main.c"
 )
 
-echo -e "Copying common files to $KDIR..."
+echo -e "Preparing the Kernel $KDIR..."
 for FILE in "${!FILE_MAPPINGS[@]}"; do
     SRC="$COMMON_DIR/$FILE"
     DEST="$KDIR/${FILE_MAPPINGS[$FILE]}"
@@ -48,4 +48,4 @@ for FILE in "${!FILE_MAPPINGS[@]}"; do
     fi
 done
 
-echo -e "\n${GREEN}Common files deployed successfully. You can now run the policy script.${NC}"
+echo -e "\n${GREEN}Preparation done successfully. You can now run the policy script.${NC}"
