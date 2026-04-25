@@ -34,7 +34,7 @@ int init_module(void)
 
 void cleanup_module(void)
 {
-        unregister_kprobe(&kp);
+    unregister_kprobe(&kp);
 	printk(KERN_INFO "Removed the probe\n");
 }
 MODULE_LICENSE("GPL");

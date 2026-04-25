@@ -1,0 +1,19 @@
+RX stack timing (ns)
+========================================================================
+stage                            count        avg_ns        max_ns
+-----                            -----        ------        ------
+e1000_alloc_frag               2125898           349         97684
+napi_build_skb                 2125898            62         40919
+copybreak_alloc                   9401           617         57945
+prefetch_gap                   2135299            29             -
+
+napi_gro_receive               2135299           342        340687
+__netif_receive_core            210766           170        177443
+ip_rcv_core                     210738            56         11357
+tcp_v4_rcv                      210721           885        245810
+tcp_queue_rcv                   184077           183             -
+copy_to_user                  46927912           105       1607372
+
+e2e_softirq                     184077         29655        457920
+
+enabled: 1

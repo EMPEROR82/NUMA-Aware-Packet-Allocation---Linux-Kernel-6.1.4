@@ -1,19 +1,7 @@
 #!/bin/bash
-# set_node.sh — Configure NUMA forcing for RX path
-#
-# Usage:
-#   ./set_node.sh <page_enable> <page_nid> [<skb_enable> <skb_nid>]
-#
-# Examples:
-#   ./set_node.sh 1 0              # Force page allocs to node 0
-#   ./set_node.sh 1 1              # Force page allocs to node 1
-#   ./set_node.sh 1 0 1 0          # Force both page + SKB allocs to node 0
-#   ./set_node.sh 1 1 1 1          # Force everything to node 1
-#   ./set_node.sh 0 0 0 0          # Disable all forcing
-
 set -e
 
-SYSFS_DIR="/sys/kernel/numa_force"
+SYSFS_DIR="/sys/kernel/numa_force_static"
 
 if [ "$#" -lt 2 ]; then
     echo "Usage: $0 <page_enable> <page_nid> [<skb_enable> <skb_nid>]"
@@ -33,7 +21,7 @@ fi
 
 if [ ! -d "${SYSFS_DIR}" ]; then
     echo "[!] Sysfs directory not found: ${SYSFS_DIR}"
-    echo "    Is force_node module loaded? Run: lsmod | grep force_node"
+    echo "    Is static_allocation_policy module loaded? Run: lsmod | grep static_allocation_policy"
     exit 1
 fi
 
@@ -58,4 +46,3 @@ echo "    enable             = $(cat ${SYSFS_DIR}/enable)"
 echo "    nid                = $(cat ${SYSFS_DIR}/nid)"
 echo "    force_small_enable = $(cat ${SYSFS_DIR}/force_small_enable)"
 echo "    small_nid          = $(cat ${SYSFS_DIR}/small_nid)"
-

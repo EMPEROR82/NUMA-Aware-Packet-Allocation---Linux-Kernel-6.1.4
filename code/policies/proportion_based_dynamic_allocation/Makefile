@@ -1,4 +1,4 @@
-obj-m += final_probe.o
+obj-m += force_node_proportion.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)

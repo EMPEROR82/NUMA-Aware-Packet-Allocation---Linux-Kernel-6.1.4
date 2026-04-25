@@ -1,0 +1,3 @@
+parallel_streams,packet_size,run_id,throughput_mbps
+1,256,1,432.0394341031005
+1,256,AGGREGATE,avg=432.04;min=432.04;max=432.04;std=0.00
