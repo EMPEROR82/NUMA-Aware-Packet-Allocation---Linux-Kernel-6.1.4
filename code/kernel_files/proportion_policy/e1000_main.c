@@ -10,34 +10,23 @@
 #include <linux/percpu.h>
 
 // MY_MODS_START
-
+#include <linux/topology.h>
 #include <net/rx_timing.h>
 
 DEFINE_PER_CPU(bool, in_clean_alloc);
 DEFINE_PER_CPU(bool, in_rx_alloc);
-DEFINE_PER_CPU(struct policy_counters, packet_counter);
 
 EXPORT_PER_CPU_SYMBOL(in_rx_alloc);
 EXPORT_PER_CPU_SYMBOL(in_clean_alloc);
-EXPORT_PER_CPU_SYMBOL(packet_counter);
 
-static enum numabreak_vals {
-        numa_default = 0,
-        numa_low_pressure = 64,
-        numa_mid_low_pressure = 128,
-        numa_mid_high_pressure = 256,
-        numa_high_pressure = 512,
-};
+#define SLOW_NID 1
+#define FAST_NID 0
+ 
+unsigned int dma_nid = 0;
+EXPORT_SYMBOL(dma_nid);
 
-static enum numabreak_ratios {
-        ratio_default = 100;
-        ratio_low = 30;
-        ratio_mid_low = 20;
-        ratio_mid_high = 15;
-        ratio_high = 10;
-}
-
-unsigned int numabreak = numa_default; 
+void update_limit(int packets_cleaned);
+void update_dma_nid();
 // MY_MODS_END
 
 char e1000_driver_name[] = "e1000";
@@ -243,9 +232,6 @@ struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
 	return adapter->netdev;
 }
 
-
-
-
 /**
  * e1000_init_module - Driver Registration Routine
  *
@@ -260,13 +246,6 @@ static int __init e1000_init_module(void)
 	pr_info("%s\n", e1000_copyright);
 
 	ret = pci_register_driver(&e1000_driver);
-
-	// MY_MODS_START
-
-//	rx_timing_dentry = debugfs_create_file("e1000_rx_timing", 0666, NULL, NULL, &rx_timing_fops);
-
-	// MY_MODS_END
-
 
 	if (copybreak != COPYBREAK_DEFAULT) {
 		if (copybreak == 0)
@@ -290,7 +269,6 @@ module_init(e1000_init_module);
  **/
 static void __exit e1000_exit_module(void)
 {
-//	debugfs_remove(rx_timing_dentry);
 	pci_unregister_driver(&e1000_driver);
 }
 
@@ -2135,19 +2113,6 @@ static void *e1000_alloc_frag(const struct e1000_adapter *a)
 }
 // MY_MODS_END
 
-
-/* 
-static void *e1000_alloc_frag(const struct e1000_adapter *a)
-{
-	unsigned int len = e1000_frag_len(a);
-	u8 *data = netdev_alloc_frag(len);
-
-	if (likely(data))
-		data += E1000_HEADROOM;
-	return data;
-}
-*/
-
 /**
  * e1000_clean_rx_ring - Free Rx Buffers per Queue
  * @adapter: board private structure
@@ -3872,7 +3837,7 @@ static int e1000_clean(struct napi_struct *napi, int budget)
 
 	tx_clean_complete = e1000_clean_tx_irq(adapter, &adapter->tx_ring[0]);
 
-	adapter->clean_rx(adapter, &adapter->rx_ring[0], &work_done, budget);
+	adapter->clean_rx(adapter, &adapter->rx_ring[0], &work_done, budget);	
 
 	if (!tx_clean_complete || work_done == budget)
 		return budget;
@@ -3886,13 +3851,6 @@ static int e1000_clean(struct napi_struct *napi, int budget)
 		if (!test_bit(__E1000_DOWN, &adapter->flags))
 			e1000_irq_enable(adapter);
 	}
-
-	// MY_MODS_START
-	
-	// !!! ISKO UNCOMMENT KARNA HAI
-	// update_numabreak();
-
-	// MY_MODS_END
 
 	return work_done;
 }
@@ -4459,71 +4417,29 @@ static struct sk_buff *e1000_copybreak(struct e1000_adapter *adapter,
 */
 
 // MY_MODS_START
-//void (*network_hook)(struct e1000_adapter *adapter, struct sk_buff *skb, u32 length) = NULL;
-//EXPORT_SYMBOL(network_hook);
-static unsigned int current_node_mem_percent(void)
-{
-    int nid, z;
-    struct pglist_data *pgdat;
-    unsigned long total_pages;
-    unsigned long free_pages = 0;
-    unsigned long occupied_pages;
-    unsigned int percentage;
+void update_limit(int packets_cleaned){
+	if(likely(this_cpu_read(packet_counter.nr_to_reset) > packets_cleaned)){
+		this_cpu_sub(packet_counter.nr_to_reset,packets_cleaned);
+	}else{
+		this_cpu_write(packet_counter.nr_to_reset, POLICY_RESET_LIMIT);
+		
+		u32 small_packets = this_cpu_read(packet_counter.nr_small_packets);
+		u32 big_packets = this_cpu_read(packet_counter.nr_big_packets);
 
-    nid = numa_node_id();
-    pgdat = NODE_DATA(nid);
-
-    if (unlikely(!pgdat))
-        return 0;
-
-    total_pages = pgdat->node_present_pages;
-
-    if (unlikely(total_pages == 0))
-        return 0;
-
-    for (z = 0; z < MAX_NR_ZONES; z++) {
-        struct zone *zone = &pgdat->node_zones[z];
-        
-        if (populated_zone(zone)) {
-            long pages = atomic_long_read(&zone->vm_stat[NR_FREE_PAGES]);
-            if (pages > 0) {
-                free_pages += pages;
-            }
-        }
-    }
-
-    if (unlikely(free_pages > total_pages))
-        free_pages = total_pages;
-
-    occupied_pages = total_pages - free_pages;
-
-    percentage = (unsigned int)((occupied_pages * 100) / total_pages);
-
-    return percentage;
+		this_cpu_write(packet_counter.nr_small_packets,(small_packets >> REDUCE_RATIO));
+		this_cpu_write(packet_counter.nr_big_packets,(big_packets >> REDUCE_RATIO));
+	}
 }
 
-void update_numabreak()
-{
-	int cur_ratio = current_node_mem_percent();
-	if(cur_ratio <= ratio_high){
-		numabreak = numa_high_pressure;
-		goto ret;
-	}
-	if(cur_ratio <= ratio_mid_high){
-		numabreak = numa_mid_high_pressure;
-		goto ret;
-	}
-	if(cur_ratio <= ratio_mid_low){
-		numabreak = numa_mid_low_pressure;
-		goto ret;
-	}
-	if(cur_ratio <= ratio_low){
-		numabreak = numa_low_pressure;
-		goto ret;
-	}
+void update_dma_nid(){
+	u32 small_packets = this_cpu_read(packet_counter.nr_small_packets);
+	u32 big_packets = this_cpu_read(packet_counter.nr_big_packets);
 
-ret:
-	return;
+	if(small_packets > big_packets){
+		dma_nid = SLOW_NID;
+	}else{
+		dma_nid = FAST_NID;
+	}
 }
 
 // MY_MODS_END
@@ -4543,7 +4459,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 	struct pci_dev *pdev = adapter->pdev;
 	struct e1000_rx_desc *rx_desc, *next_rxd;
 	struct e1000_rx_buffer *buffer_info, *next_buffer;
-	u32 length;
+	u32 length,small_packets, big_packets;
 	unsigned int i;
 	int cleaned_count = 0;
 	bool cleaned = false;
@@ -4551,7 +4467,6 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 	// MY MODS START 
 	this_cpu_write(in_clean_alloc, true);
-	// update_numabreak();	
 	// MY MODS END
 
 	i = rx_ring->next_to_clean;
@@ -4579,16 +4494,6 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 		data = buffer_info->rxbuf.data;
 	
-/*		
-		// MY_MODS_START
-
-		struct page* page = virt_to_page(data); 
-		int nid = page_to_nid(page); 
-	//	pr_info("[%s]: data node[%d]\n", __func__, nid); 
-
-		// MY_MODS_END
-*/
-		
 		// MY_MODS_START	
 
 		t_pfetch = rx_ts();
@@ -4607,8 +4512,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 			// MY_MODS_START
 			
-			this_cpu_inc(packet_counter.nr_small_packets);
-
+			this_cpu_inc(packet_counter.nr_big_packets);
 			t0 = rx_ts();
 			skb = napi_build_skb(data - E1000_HEADROOM, frag_len);
 			if (t0 && skb) {
@@ -4634,7 +4538,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 			buffer_info->dma = 0;
 			buffer_info->rxbuf.data = NULL;
 		}else{
-			this_cpu_inc(packet_counter.nr_big_packets);
+			this_cpu_inc(packet_counter.nr_small_packets);
 		}
 		
 		if (++i == rx_ring->count)
@@ -4657,13 +4561,6 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 		if (unlikely(!(status & E1000_RXD_STAT_EOP)))
 			adapter->discarding = true;
 	
-/*		
-		MY_MODS_START
-		if(network_hook)
-			network_hook(adapter,skb,length);
-		MY_MODS_END
-*/
-		
 		if (adapter->discarding) {
 			/* All receives must fit into a single buffer */
 			netdev_dbg(netdev, "Receive packet consumed multiple buffers\n");
@@ -4735,19 +4632,9 @@ next_desc:
 
 	// MY MODS START 
 	this_cpu_write(in_clean_alloc, false); 
-		
-	if(this_cpu_read(packet_counter.nr_to_reset) > total_rx_packets){
-		this_cpu_sub(packet_counter.nr_to_reset, total_rx_packets);
-	}else{
-		this_cpu_write(packet_counter.nr_to_reset, POLICY_RESET_LIMIT);
 	
-		u32 small_packets = this_cpu_read(packet_counter.nr_small_packets);
-		u32 big_packets = this_cpu_read(packet_counter.nr_big_packets);
-
-		this_cpu_write(packet_counter.nr_small_packets, (small_packets >> REDUCE_RATIO));
-		this_cpu_write(packet_counter.nr_big_packets, (big_packets >> REDUCE_RATIO));
-	}
-	
+	update_limit(total_rx_packets);
+	update_dma_nid();
 	// MY MODS END
 
 	return cleaned;
