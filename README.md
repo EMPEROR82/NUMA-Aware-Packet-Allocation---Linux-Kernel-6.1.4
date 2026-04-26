@@ -446,20 +446,132 @@ sudo rmmod network_alloc_test
 
 ---
 
-## Getting Started (< 30 min)
+## Getting Started — Full Ordered Workflow
 
-1. Download and extract Linux 6.1.4 (link above)
-2. `cd code/ && ./prepare.sh` → enter kernel path
-3. `./change_mode.sh` → select `static_policy`; optionally start build
-4. Set `CONFIG_E1000=m`: `scripts/config --module CONFIG_E1000 && make olddefconfig`
-5. `make -j$(nproc) && sudo make modules_install && sudo make install` then reboot
-6. Verify e1000 is loaded: `lsmod | grep e1000`
-7. `cd policies/static_2_level_allocation && ./build_and_load.sh`
-   → builds and inserts **`static_allocation_policy.ko`**
-8. Force node 0: `./set_node.sh 1 0 1 0`
-9. Enable latency: `echo 1 | sudo tee /sys/kernel/debug/rx_timing`
-10. Send traffic from host: `python3 script.py --output test.csv --size 64 --parallel 1 --duration 30`
-11. Read latency: `cat /sys/kernel/debug/rx_timing`
+### Step 1 — Download and Patch the Kernel
+
+```bash
+# 1a. Get Linux 6.1.4
+wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.4.tar.xz
+tar -xf linux-6.1.4.tar.xz
+
+# 1b. Patch common files (run from inside code/)
+cd code/
+chmod +x prepare.sh
+./prepare.sh          # enter absolute path to linux-6.1.4 when prompted
+
+# 1c. Select and inject a NUMA policy variant
+chmod +x change_mode.sh
+./change_mode.sh      # choose: static_policy / proportion_policy / numabreak_policy
+```
+
+### Step 2 — Configure and Build the Kernel
+
+```bash
+cd /path/to/linux-6.1.4
+cp /boot/config-$(uname -r) .config
+make olddefconfig
+
+# REQUIRED: set e1000 as a loadable module
+scripts/config --module CONFIG_E1000
+make olddefconfig
+
+# Build (30–90 min) and install
+make -j$(nproc)
+sudo make modules_install
+sudo make install
+sudo reboot
+```
+
+### Step 3 — Load the Policy Module (on the VM, after boot)
+
+```bash
+# Verify e1000 is loaded (it loads automatically on boot)
+lsmod | grep e1000
+
+# Navigate to the policy you selected in Step 1c and follow its README:
+
+# --- Policy 1: Static 2-Level ---
+cd code/policies/static_2_level_allocation/
+# Read: README.md for full details
+chmod +x build_and_load.sh && ./build_and_load.sh
+# Then set the target node:
+chmod +x set_node.sh
+./set_node.sh 1 0 1 0    # pages + SKBs → node 0
+
+# --- Policy 2: Proportion-Based Dynamic ---
+cd code/policies/proportion_based_dynamic_allocation/
+# Read: README.md for full details
+chmod +x build_and_load.sh && ./build_and_load.sh
+# No further config needed — runs automatically
+
+# --- Policy 3: Numabreak Threshold ---
+cd code/policies/numabreak_allocation/
+# Read: README.md for full details
+chmod +x build_and_load.sh && ./build_and_load.sh
+# No further config needed — runs automatically
+```
+
+> Each policy directory has its own `README.md` with the complete usage guide, sysfs knobs (where applicable), and expected behaviour.
+
+### Step 4 — Enable Latency Instrumentation (on the VM)
+
+```bash
+# Reset counters and enable collection
+echo r | sudo tee /sys/kernel/debug/rx_timing
+echo 1 | sudo tee /sys/kernel/debug/rx_timing
+
+# Verify it is enabled
+cat /sys/kernel/debug/rx_timing     # should show: enabled: 1
+```
+
+### Step 5 — Run Traffic Tests (on the host / remote client)
+
+```bash
+cd code/testing_scripts/benchmarking/client_side/
+
+# Fixed packet size sweep
+python3 script.py --output test_static_node0_64_p1.csv \
+    --size 64 --parallel 1 --runs 3 --duration 120
+
+# Or randomised size range
+python3 randomised_script.py --min-size 64 --max-size 1024 --runs 20 \
+    -o rand_test.csv
+```
+
+> Full benchmarking guide: `code/testing_scripts/benchmarking/BENCHMARKING.md`
+
+### Step 6 — Collect Latency Data (on the VM)
+
+```bash
+# Snapshot after the test run
+sudo cat /sys/kernel/debug/rx_timing > latency_result.txt
+
+# Reset for the next run
+echo r | sudo tee /sys/kernel/debug/rx_timing
+```
+
+### Step 7 — Plot Results
+
+```bash
+# Quick bar charts from any named files:
+cd code/testing_scripts/benchmarking/client_side/
+python3 analyse_results_gen.py --dir . --out throughput   # → throughput_bar.png
+
+cd code/testing_scripts/benchmarking/server_side/
+python3 analyse_results_gen.py --dir . --out latency_plots  # → latency_plots/*.png
+
+# Structured line charts (name files as node_XX_SIZE_P.csv/.txt first):
+python3 analyse.py
+```
+
+### Step 8 — Unload the Module
+
+```bash
+# After experiments are done
+sudo rmmod static_allocation_policy    # or proportion_based_policy / numabreak_policy
+echo 0 | sudo tee /sys/kernel/debug/rx_timing   # disable instrumentation
+```
 
 ---
 
