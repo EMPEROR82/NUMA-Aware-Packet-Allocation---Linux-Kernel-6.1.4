@@ -128,29 +128,31 @@ enabled: 1
 ## 5. Full Experiment Workflow (Per Policy)
 
 ```
-VM                                        HOST
-────────────────────────────────────────────────────────────
+VM                                        		                         HOST
+─────────────────────────────────────────────────────────────────────────────────────────────────────────
 [Load policy module]
 sudo insmod static_allocation_policy.ko
 ./set_node.sh 1 0 1 0
 
 [Reset counters]
+echo 0 | sudo tee /sys/kernel/debug/rx_timing
 echo r | sudo tee /sys/kernel/debug/rx_timing
 echo 1 | sudo tee /sys/kernel/debug/rx_timing
 
 [Start iperf3 server]
 iperf3 -s
-                                          [Run client]
-                                          python3 script.py \
-                                            --output node0_64_p1.csv \
-                                            --size 64 --parallel 1 \
-                                            --duration 120
+                                                                    [Run client]
+                                                                    python3 script.py \
+                                                                    --output node0_64_p1.csv \
+                                                                    --size 64 --parallel 1 \
+                                                                    --duration 120
 
 [Collect latency]
 sudo cat /sys/kernel/debug/rx_timing > node0_64_p1.txt
 echo r | sudo tee /sys/kernel/debug/rx_timing
 
-                                          [Repeat for next size/policy]
+                                    
+                                    [Repeat for next size/policy]
 ```
 
 ---
