@@ -15,7 +15,7 @@
 
 DEFINE_PER_CPU(bool, in_clean_alloc);
 DEFINE_PER_CPU(bool, in_rx_alloc);
-DEFINE_PER_CPU(struct policy_counter, packet_counter);
+DEFINE_PER_CPU(struct policy_counters, packet_counter);
 
 EXPORT_PER_CPU_SYMBOL(in_rx_alloc);
 EXPORT_PER_CPU_SYMBOL(in_clean_alloc);
