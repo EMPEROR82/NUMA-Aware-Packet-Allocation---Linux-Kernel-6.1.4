@@ -10,7 +10,7 @@ echo -e "${CYAN}=== Phase 1: Deploy Common Kernel Files ===${NC}"
 
 read -p "Enter the absolute path from your home to your Linux kernel source code: " KDIR
 
-example : /home/dnyanesh/linux-6.1.4
+# example : /home/dnyanesh/linux-6.1.4
 
 if [ ! -d "$KDIR" ] || [ ! -f "$KDIR/Makefile" ]; then
     echo -e "${RED}Error: Invalid Linux kernel directory at $KDIR.${NC}"
