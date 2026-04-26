@@ -9,60 +9,64 @@
 ```
 .
 ├── README.md
+├── patches/                                        # Git-format kernel patches (one per policy)
+│   ├── 0001-e1000-Static-NUMA-Aware-rx-packets-allocation.patch
+│   ├── 0001-e1000-Dynamic-packet-size-proportion-based-NUMA-Awar.patch
+│   └── 0001-e1000-Dynamic-NUMABREAK-based-NUMA-Aware-rx-packets-.patch
 ├── code/
-│   ├── prepare.sh                              # Phase 1: copy common kernel files into kernel tree
-│   ├── change_mode.sh                          # Phase 2: inject policy e1000_main.c + build
+│   ├── prepare.sh                                  # Phase 1: copy common kernel files into kernel tree
+│   ├── change_mode.sh                              # Phase 2: inject policy e1000_main.c + build
 │   ├── kernel_files/
-│   │   ├── common_kernel_files/                # Patched kernel sources (shared across all policies)
-│   │   │   ├── rx_timing.h                    # Latency framework header (structs, per-CPU decls)
-│   │   │   ├── rx_timing.c                    # debugfs /sys/kernel/debug/rx_timing impl
-│   │   │   ├── e1000_main.c                   # Base patched e1000 driver
-│   │   │   ├── dev.c                          # Patched net/core/dev.c
-│   │   │   ├── gro.c                          # Patched net/core/gro.c
-│   │   │   ├── ip_input.c                     # Patched net/ipv4/ip_input.c
-│   │   │   ├── tcp_ipv4.c                     # Patched net/ipv4/tcp_ipv4.c
-│   │   │   ├── tcp_input.c                    # Patched net/ipv4/tcp_input.c
-│   │   │   ├── tcp.c                          # Patched net/ipv4/tcp.c
-│   │   │   └── Makefile                       # net/core Makefile (adds rx_timing.o)
+│   │   ├── common_kernel_files/                    # Patched kernel sources (shared across all policies)
+│   │   │   ├── rx_timing.h                        # Latency framework header (per-CPU decls, structs)
+│   │   │   ├── rx_timing.c                        # debugfs /sys/kernel/debug/rx_timing impl
+│   │   │   ├── e1000_main.c                       # Base patched e1000 driver (per-CPU flags)
+│   │   │   ├── dev.c                              # Patched net/core/dev.c
+│   │   │   ├── gro.c                              # Patched net/core/gro.c
+│   │   │   ├── ip_input.c                         # Patched net/ipv4/ip_input.c
+│   │   │   ├── tcp_ipv4.c                         # Patched net/ipv4/tcp_ipv4.c
+│   │   │   ├── tcp_input.c                        # Patched net/ipv4/tcp_input.c
+│   │   │   ├── tcp.c                              # Patched net/ipv4/tcp.c
+│   │   │   └── Makefile                           # net/core Makefile (adds rx_timing.o)
 │   │   ├── static_policy/
-│   │   │   └── e1000_main.c                   # Static 2-level policy variant of e1000_main.c
+│   │   │   └── e1000_main.c                       # Static 2-level policy variant of e1000_main.c
 │   │   ├── proportion_policy/
-│   │   │   └── e1000_main.c                   # Proportion-based dynamic policy variant
+│   │   │   └── e1000_main.c                       # Proportion-based dynamic policy variant
 │   │   └── numabreak_policy/
-│   │       └── e1000_main.c                   # Numabreak threshold policy variant
+│   │       └── e1000_main.c                       # Numabreak threshold policy variant
 │   ├── policies/
-│   │   ├── static_2_level_allocation/          # → static_allocation_policy.ko
-│   │   │   ├── static_allocation_policy.c     # kprobes on __alloc_pages + __alloc_skb
+│   │   ├── static_2_level_allocation/              # → static_allocation_policy.ko
+│   │   │   ├── static_allocation_policy.c         # kprobes on __alloc_pages + __alloc_skb
 │   │   │   ├── Makefile
-│   │   │   ├── build_and_load.sh              # Build, insmod, set sysfs defaults
-│   │   │   ├── set_node.sh                    # Configure NUMA nodes via sysfs knobs
-│   │   │   └── README.md                      # Policy usage guide
-│   │   ├── proportion_based_dynamic_allocation/  # → proportion_based_policy.ko
-│   │   │   ├── proportion_based_policy.c      # Proportion-based kprobe module source
+│   │   │   ├── build_and_load.sh                  # Build, insmod, set sysfs defaults
+│   │   │   ├── set_node.sh                        # Configure NUMA nodes via sysfs knobs
+│   │   │   └── README.md                          # Policy usage guide
+│   │   ├── proportion_based_dynamic_allocation/    # → proportion_based_policy.ko
+│   │   │   ├── proportion_based_policy.c          # Proportion-based kprobe module source
 │   │   │   ├── Makefile
-│   │   │   ├── build_and_load.sh              # Build + insmod
-│   │   │   └── README.md                      # Policy usage guide
-│   │   └── numabreak_allocation/              # → numabreak_policy.ko
-│   │       ├── numabreak_policy.c             # kprobe: SKBs ≤ numabreak → slow_nid
+│   │   │   ├── build_and_load.sh                  # Build + insmod
+│   │   │   └── README.md                          # Policy usage guide
+│   │   └── numabreak_allocation/                   # → numabreak_policy.ko
+│   │       ├── numabreak_policy.c                 # kprobe: SKBs ≤ numabreak → slow_nid
 │   │       ├── Makefile
-│   │       ├── build_and_load.sh              # Build + insmod
-│   │       └── README.md                      # Policy usage guide
+│   │       ├── build_and_load.sh                  # Build + insmod
+│   │       └── README.md                          # Policy usage guide
 │   └── testing_scripts/
 │       ├── benchmarking/
-│       │   ├── BENCHMARKING.md                # Full benchmarking workflow guide
+│       │   ├── BENCHMARKING.md                    # Full benchmarking workflow guide
 │       │   ├── client_side/
-│       │   │   ├── script.py                  # iperf3 sweep runner (CSV output)
-│       │   │   ├── randomised_script.py       # Random packet-size range sweep
-│       │   │   ├── analyse_results_gen.py     # Bar chart: any CSV, filename as X-axis
-│       │   │   └── analyse.py                 # Line chart: node_XX_SIZE_P.csv naming
+│       │   │   ├── script.py                      # iperf3 sweep runner (CSV output)
+│       │   │   ├── randomised_script.py           # Random packet-size range sweep
+│       │   │   ├── analyse_results_gen.py         # Bar chart: any CSV, filename as X-axis
+│       │   │   └── analyse.py                     # Line chart: node_XX_SIZE_P.csv naming
 │       │   └── server_side/
-│       │       ├── analyse_results_gen.py     # Bar chart: any TXT, filename as X-axis
-│       │       └── analyse.py                 # Line chart: node_XX_SIZE_P.txt naming
+│       │       ├── analyse_results_gen.py         # Bar chart: any TXT, filename as X-axis
+│       │       └── analyse.py                     # Line chart: node_XX_SIZE_P.txt naming
 │       ├── dma_allocation/
-│       │   ├── dma_alloc_test.c               # kprobe: logs NUMA node at napi_build_skb
+│       │   ├── dma_alloc_test.c                   # kprobe: logs NUMA node at napi_build_skb
 │       │   └── Makefile
 │       └── network_allocation/
-│           ├── network_alloc_test.c           # kprobe: logs NUMA node at eth_type_trans
+│           ├── network_alloc_test.c               # kprobe: logs NUMA node at eth_type_trans
 │           └── Makefile
 └── results/
     ├── static_allocation/
@@ -123,7 +127,7 @@ chmod +x prepare.sh
 
 This copies the following patched files into the kernel tree:
 
-| Source File | Kernel Destination |
+| Source file | Kernel destination |
 |-------------|-------------------|
 | `rx_timing.h` | `include/net/rx_timing.h` |
 | `rx_timing.c` | `net/core/rx_timing.c` |
@@ -136,6 +140,8 @@ This copies the following patched files into the kernel tree:
 | `tcp.c` | `net/ipv4/tcp.c` |
 | `e1000_main.c` | `drivers/net/ethernet/intel/e1000/e1000_main.c` |
 
+> **Alternative:** Git patches are available in `patches/` and can be applied with `git apply`.
+
 ### 3. Inject a NUMA Policy (Phase 2 — Policy Selection)
 
 ```bash
@@ -146,7 +152,7 @@ chmod +x change_mode.sh
 # Optionally start the build immediately
 ```
 
-`change_mode.sh` copies the chosen policy's `e1000_main.c` into the kernel tree, replacing the base version. This selects which NUMA decision logic runs in the driver.
+`change_mode.sh` copies the chosen policy's `e1000_main.c` from `kernel_files/<policy>/` into the kernel tree, replacing the base version installed in Phase 1.
 
 ### 4. Configure the Kernel
 
@@ -163,12 +169,7 @@ make olddefconfig
 **Option A — scriptable (recommended):**
 
 ```bash
-cd /path/to/linux-6.1.4
-
-# Set e1000 as a loadable module
 scripts/config --module CONFIG_E1000
-
-# Reconcile any dependency changes
 make olddefconfig
 ```
 
@@ -205,7 +206,7 @@ sudo reboot
 
 ### A. Per-Stage Latency Instrumentation (`rx_timing`)
 
-Timestamps are inserted at 11 stages of the RX path inside the patched kernel sources:
+Timestamps are inserted at 11 stages of the RX path in the patched kernel sources:
 
 | Stage | Location |
 |-------|----------|
@@ -224,17 +225,10 @@ Timestamps are inserted at 11 stages of the RX path inside the patched kernel so
 **Controlling the debugfs interface:**
 
 ```bash
-# Enable timing collection
-echo 1 | sudo tee /sys/kernel/debug/rx_timing
-
-# Read results (count / avg_ns / max_ns per stage)
-cat /sys/kernel/debug/rx_timing
-
-# Reset counters
-echo r | sudo tee /sys/kernel/debug/rx_timing
-
-# Disable
-echo 0 | sudo tee /sys/kernel/debug/rx_timing
+echo 1 | sudo tee /sys/kernel/debug/rx_timing   # Enable collection
+cat /sys/kernel/debug/rx_timing                  # Read (count / avg_ns / max_ns per stage)
+echo r | sudo tee /sys/kernel/debug/rx_timing   # Reset counters
+echo 0 | sudo tee /sys/kernel/debug/rx_timing   # Disable
 ```
 
 **Output format:**
@@ -251,22 +245,23 @@ enabled: 1
 
 ## NUMA Policies
 
-> ⚠️ **Load only ONE policy module at a time.** Loading multiple modules simultaneously is untested and will cause conflicts between kprobes.
+> ⚠️ **Load only ONE policy module at a time.** Simultaneous kprobe registration from multiple modules is untested and will conflict.
 
 ### Policy 1 — Static 2-Level Allocation (`static_2_level_allocation`)
 
-Uses kprobes on `__alloc_pages` and `__alloc_skb` to redirect allocations to a **user-specified NUMA node**. Two independent knobs separately control RX page allocations (DMA buffers) and SKB allocations (socket buffers). Fully controllable at runtime via sysfs.
+Uses kprobes on `__alloc_pages` and `__alloc_skb` to redirect allocations to a **user-specified NUMA node**. Two independent knobs separately control page allocations (DMA/RX buffers) and SKB allocations (socket buffers). Fully controllable at runtime via sysfs.
 
-**Kernel driver:** `kernel_files/static_policy/e1000_main.c`  
-**Module:** `static_allocation_policy.ko`
+**Kernel driver variant:** `kernel_files/static_policy/e1000_main.c`  
+**Module:** `static_allocation_policy.ko`  
+**Patch:** `patches/0001-e1000-Static-NUMA-Aware-rx-packets-allocation.patch`
 
 ```bash
 cd code/policies/static_2_level_allocation/
 
-# Build and insert (checks e1000 is loaded)
+# Build and insert (checks e1000 is loaded first)
 chmod +x build_and_load.sh && ./build_and_load.sh
 
-# Configure NUMA node
+# Configure NUMA nodes
 chmod +x set_node.sh
 ./set_node.sh <page_enable> <page_nid> [<skb_enable> <skb_nid>]
 
@@ -276,7 +271,7 @@ chmod +x set_node.sh
 ./set_node.sh 1 0 1 0      # Force pages + SKBs → node 0
 ./set_node.sh 0 0 0 0      # Disable all forcing
 
-# Remove
+# Remove module
 sudo rmmod static_allocation_policy
 ```
 
@@ -295,18 +290,19 @@ sudo rmmod static_allocation_policy
 
 ### Policy 2 — Proportion-Based Dynamic Allocation (`proportion_based_dynamic_allocation`)
 
-Automatically steers all RX allocations to the NUMA node indicated by `dma_nid`, which is updated by the patched `e1000_main.c` based on per-CPU packet traffic proportions (small vs. large packets). **No sysfs interface** — the policy is fully automatic once loaded.
+Automatically steers all RX allocations to the NUMA node indicated by `dma_nid`. This variable is updated by the patched `proportion_policy/e1000_main.c` based on per-CPU packet traffic proportions (small vs. large packet counts). **No sysfs interface** — the policy is fully automatic once loaded.
 
-**Kernel driver:** `kernel_files/proportion_policy/e1000_main.c`  
-**Module:** `proportion_based_policy.ko`
+**Kernel driver variant:** `kernel_files/proportion_policy/e1000_main.c`  
+**Module:** `proportion_based_policy.ko`  
+**Patch:** `patches/0001-e1000-Dynamic-packet-size-proportion-based-NUMA-Awar.patch`
 
 ```bash
 cd code/policies/proportion_based_dynamic_allocation/
 
-# Build and insert (checks e1000 is loaded)
+# Build and insert (checks e1000 is loaded first)
 chmod +x build_and_load.sh && ./build_and_load.sh
 
-# Remove
+# Remove module
 sudo rmmod proportion_based_policy
 ```
 
@@ -316,18 +312,19 @@ sudo rmmod proportion_based_policy
 
 ### Policy 3 — Numabreak Threshold Allocation (`numabreak_allocation`)
 
-Splits allocations based on a **packet-size threshold** (`numabreak`): SKBs for small packets (≤ `numabreak` bytes) are redirected to `slow_nid` (node 1); large packet allocations follow the default `dma_nid` path. **No sysfs interface** — `slow_nid` is a compile-time constant (default: 1).
+Splits allocations based on a **packet-size threshold** (`numabreak`): SKBs for small packets (≤ `numabreak` bytes) are redirected to `slow_nid` (node 1 by default); large packet allocations follow the default `dma_nid` path. **No sysfs interface** — `slow_nid` is a compile-time constant in the module.
 
-**Kernel driver:** `kernel_files/numabreak_policy/e1000_main.c`  
-**Module:** `numabreak_policy.ko`
+**Kernel driver variant:** `kernel_files/numabreak_policy/e1000_main.c`  
+**Module:** `numabreak_policy.ko`  
+**Patch:** `patches/0001-e1000-Dynamic-NUMABREAK-based-NUMA-Aware-rx-packets-.patch`
 
 ```bash
 cd code/policies/numabreak_allocation/
 
-# Build and insert (checks e1000 is loaded)
+# Build and insert (checks e1000 is loaded first)
 chmod +x build_and_load.sh && ./build_and_load.sh
 
-# Remove
+# Remove module
 sudo rmmod numabreak_policy
 ```
 
@@ -354,7 +351,7 @@ echo 1 | sudo tee /sys/kernel/debug/rx_timing
 
 ### Running Tests (Host / Client Side)
 
-`script.py` supports `--size`, `--parallel`, `--runs`, `--duration` flags (all optional with defaults):
+`script.py` supports `--size`, `--parallel`, `--runs`, `--duration` flags (all optional, with defaults):
 
 ```bash
 cd code/testing_scripts/benchmarking/client_side/
@@ -373,11 +370,8 @@ python3 randomised_script.py --min-size 64 --max-size 1024 --runs 20 -o rand_bas
 ### Collecting Latency (VM Side)
 
 ```bash
-# After test completes, snapshot latency data
 sudo cat /sys/kernel/debug/rx_timing > baseline_64_p1.txt
-
-# Reset for next run
-echo r | sudo tee /sys/kernel/debug/rx_timing
+echo r | sudo tee /sys/kernel/debug/rx_timing   # reset for next run
 ```
 
 ### Generating Plots
@@ -446,7 +440,7 @@ sudo rmmod dma_alloc_test
 # SKB data (eth_type_trans) node check
 cd code/testing_scripts/network_allocation/
 make && sudo insmod network_alloc_test.ko
-dmesg | grep eth_type_trans    # prints node id every ~1000 packets (throttled)
+dmesg | grep eth_type_trans   # prints node id every ~1000 packets (throttled)
 sudo rmmod network_alloc_test
 ```
 
@@ -475,4 +469,4 @@ sudo rmmod network_alloc_test
 - **e1000 driver only** — policy hooks are inside `e1000_clean_rx_irq`. Other NICs are not patched.
 - **QEMU/KVM recommended** — physical multi-socket NUMA machines also work but require BIOS NUMA enabled.
 - **Only one policy module at a time** — simultaneous loading of multiple kprobe modules is untested.
-- No known persistent crashes or deadlocks. Occasional `dmesg` warnings about kprobe re-registration if module is inserted without removing first (handled by `build_and_load.sh`).
+- No known persistent crashes or deadlocks. Occasional `dmesg` warnings about kprobe re-registration if a module is inserted without removing the previous one first (handled by `build_and_load.sh`).
