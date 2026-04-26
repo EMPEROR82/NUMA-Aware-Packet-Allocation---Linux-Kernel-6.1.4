@@ -1,0 +1,910 @@
+From 135fd5ea165867bfdecf767119d53bd772a74ab3 Mon Sep 17 00:00:00 2001
+From: EMPEROR82 <dangiyatharth7@gmail.com>
+Date: Sun, 26 Apr 2026 08:06:27 +0530
+Subject: [PATCH] e1000: Dynamic packet size proportion based NUMA Aware rx
+ packets allocation
+
+Signed-off-by: EMPEROR82 <dangiyatharth7@gmail.com>
+---
+ drivers/net/ethernet/intel/e1000/e1000_main.c | 170 +++++++++++++++++-
+ include/net/rx_timing.h                       |  94 ++++++++++
+ net/core/Makefile                             |   7 +-
+ net/core/dev.c                                |  26 +++
+ net/core/gro.c                                |  19 ++
+ net/core/rx_timing.c                          | 146 +++++++++++++++
+ net/ipv4/ip_input.c                           |  20 +++
+ net/ipv4/tcp.c                                |  18 ++
+ net/ipv4/tcp_input.c                          |  26 +++
+ net/ipv4/tcp_ipv4.c                           |  26 +++
+ 10 files changed, 545 insertions(+), 7 deletions(-)
+ create mode 100644 include/net/rx_timing.h
+ create mode 100644 net/core/rx_timing.c
+
+diff --git a/drivers/net/ethernet/intel/e1000/e1000_main.c b/drivers/net/ethernet/intel/e1000/e1000_main.c
+index 61e60e4de600..d11e6aac86c5 100644
+--- a/drivers/net/ethernet/intel/e1000/e1000_main.c
++++ b/drivers/net/ethernet/intel/e1000/e1000_main.c
+@@ -7,6 +7,29 @@
+ #include <linux/prefetch.h>
+ #include <linux/bitops.h>
+ #include <linux/if_vlan.h>
++#include <linux/percpu.h>
++
++// MY_MODS_START
++#include <linux/topology.h>
++#include <net/rx_timing.h>
++
++DEFINE_PER_CPU(bool, in_clean_alloc);
++DEFINE_PER_CPU(bool, in_rx_alloc);
++DEFINE_PER_CPU(struct policy_counters, packet_counter);
++
++EXPORT_PER_CPU_SYMBOL(in_rx_alloc);
++EXPORT_PER_CPU_SYMBOL(in_clean_alloc);
++EXPORT_PER_CPU_SYMBOL(packet_counter);
++
++#define SLOW_NID 1
++#define FAST_NID 0
++ 
++unsigned int dma_nid = 0;
++EXPORT_SYMBOL(dma_nid);
++
++void update_limit(int packets_cleaned);
++void update_dma_nid(void);
++// MY_MODS_END
+ 
+ char e1000_driver_name[] = "e1000";
+ static char e1000_driver_string[] = "Intel(R) PRO/1000 Network Driver";
+@@ -225,6 +248,7 @@ static int __init e1000_init_module(void)
+ 	pr_info("%s\n", e1000_copyright);
+ 
+ 	ret = pci_register_driver(&e1000_driver);
++
+ 	if (copybreak != COPYBREAK_DEFAULT) {
+ 		if (copybreak == 0)
+ 			pr_info("copybreak disabled\n");
+@@ -232,6 +256,8 @@ static int __init e1000_init_module(void)
+ 			pr_info("copybreak enabled for "
+ 				   "packets <= %u bytes\n", copybreak);
+ 	}
++
++	pr_info("My changes done\n");
+ 	return ret;
+ }
+ 
+@@ -2066,15 +2092,28 @@ static unsigned int e1000_frag_len(const struct e1000_adapter *a)
+ 		SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+ }
+ 
++// MY_MODS_START
+ static void *e1000_alloc_frag(const struct e1000_adapter *a)
+ {
+ 	unsigned int len = e1000_frag_len(a);
+-	u8 *data = netdev_alloc_frag(len);
++	u64 t0, dt;
++	u8 *data;
++
++	t0 = rx_ts();
++	data = netdev_alloc_frag(len);
++	if (t0) {
++		dt = ktime_get_ns() - t0;
++		this_cpu_add(rx_timing_data.frag_alloc_ns, dt);
++		this_cpu_inc(rx_timing_data.frag_alloc_cnt);
++		if (dt > __this_cpu_read(rx_timing_data.frag_alloc_max))
++			__this_cpu_write(rx_timing_data.frag_alloc_max, dt);
++	}
+ 
+ 	if (likely(data))
+ 		data += E1000_HEADROOM;
+ 	return data;
+ }
++// MY_MODS_END
+ 
+ /**
+  * e1000_clean_rx_ring - Free Rx Buffers per Queue
+@@ -3800,7 +3839,7 @@ static int e1000_clean(struct napi_struct *napi, int budget)
+ 
+ 	tx_clean_complete = e1000_clean_tx_irq(adapter, &adapter->tx_ring[0]);
+ 
+-	adapter->clean_rx(adapter, &adapter->rx_ring[0], &work_done, budget);
++	adapter->clean_rx(adapter, &adapter->rx_ring[0], &work_done, budget);	
+ 
+ 	if (!tx_clean_complete || work_done == budget)
+ 		return budget;
+@@ -3998,6 +4037,11 @@ static void e1000_consume_page(struct e1000_rx_buffer *bi, struct sk_buff *skb,
+ static void e1000_receive_skb(struct e1000_adapter *adapter, u8 status,
+ 			      __le16 vlan, struct sk_buff *skb)
+ {
++	// MY_MODS_START
++	if (rx_timing_on)
++		skb->tstamp = ktime_get_ns();
++	// MY_MODS_END
++
+ 	skb->protocol = eth_type_trans(skb, adapter->netdev);
+ 
+ 	if (status & E1000_RXD_STAT_VP) {
+@@ -4319,6 +4363,39 @@ static bool e1000_clean_jumbo_rx_irq(struct e1000_adapter *adapter,
+ /* this should improve performance for small packets with large amounts
+  * of reassembly being done in the stack
+  */
++// MY_MODS_START
++static struct sk_buff *e1000_copybreak(struct e1000_adapter *adapter,
++				       struct e1000_rx_buffer *buffer_info,
++				       u32 length, const void *data)
++{
++	struct sk_buff *skb;
++	u64 t0, dt;
++
++	if (length > copybreak)
++		return NULL;
++
++	t0 = rx_ts();
++	skb = e1000_alloc_rx_skb(adapter, length);
++	if (t0) {
++		dt = ktime_get_ns() - t0;
++		this_cpu_add(rx_timing_data.copybreak_ns, dt);
++		this_cpu_inc(rx_timing_data.copybreak_cnt);
++		if (dt > __this_cpu_read(rx_timing_data.copybreak_max))
++			__this_cpu_write(rx_timing_data.copybreak_max, dt);
++	}
++	if (!skb)
++		return NULL;
++
++	dma_sync_single_for_cpu(&adapter->pdev->dev, buffer_info->dma,
++				length, DMA_FROM_DEVICE);
++
++	skb_put_data(skb, data, length);
++
++	return skb;
++}
++// MY_MODS_END
++
++/*
+ static struct sk_buff *e1000_copybreak(struct e1000_adapter *adapter,
+ 				       struct e1000_rx_buffer *buffer_info,
+ 				       u32 length, const void *data)
+@@ -4339,6 +4416,37 @@ static struct sk_buff *e1000_copybreak(struct e1000_adapter *adapter,
+ 
+ 	return skb;
+ }
++*/
++
++// MY_MODS_START
++void update_limit(int packets_cleaned){
++	u32 small_packets, big_packets;
++	if(likely(this_cpu_read(packet_counter.nr_to_reset) > packets_cleaned)){
++		this_cpu_sub(packet_counter.nr_to_reset,packets_cleaned);
++	}else{
++		this_cpu_write(packet_counter.nr_to_reset, POLICY_RESET_LIMIT);
++		
++		small_packets = this_cpu_read(packet_counter.nr_small_packets);
++		big_packets = this_cpu_read(packet_counter.nr_big_packets);
++
++		this_cpu_write(packet_counter.nr_small_packets,(small_packets >> REDUCE_RATIO));
++		this_cpu_write(packet_counter.nr_big_packets,(big_packets >> REDUCE_RATIO));
++	}
++}
++
++void update_dma_nid(void){
++	u32 small_packets, big_packets;
++	small_packets = this_cpu_read(packet_counter.nr_small_packets);
++	big_packets = this_cpu_read(packet_counter.nr_big_packets);
++
++	if(small_packets > big_packets){
++		dma_nid = SLOW_NID;
++	}else{
++		dma_nid = FAST_NID;
++	}
++}
++
++// MY_MODS_END
+ 
+ /**
+  * e1000_clean_rx_irq - Send received data up the network stack; legacy
+@@ -4361,6 +4469,10 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
+ 	bool cleaned = false;
+ 	unsigned int total_rx_bytes = 0, total_rx_packets = 0;
+ 
++	// MY MODS START 
++	this_cpu_write(in_clean_alloc, true);
++	// MY MODS END
++
+ 	i = rx_ring->next_to_clean;
+ 	rx_desc = E1000_RX_DESC(*rx_ring, i);
+ 	buffer_info = &rx_ring->buffer_info[i];
+@@ -4370,6 +4482,12 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
+ 		u8 *data;
+ 		u8 status;
+ 
++		// MY_MODS_START
++		
++		u64 t0, t_pfetch, dt;
++		
++		// MY_MODS_END
++
+ 		if (*work_done >= work_to_do)
+ 			break;
+ 		(*work_done)++;
+@@ -4379,12 +4497,39 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
+ 		length = le16_to_cpu(rx_desc->length);
+ 
+ 		data = buffer_info->rxbuf.data;
++	
++		// MY_MODS_START	
++
++		t_pfetch = rx_ts();
+ 		prefetch(data);
++		if (t_pfetch) {
++			dt = ktime_get_ns() - t_pfetch;
++			this_cpu_add(rx_timing_data.prefetch_gap_ns, dt);
++			this_cpu_inc(rx_timing_data.prefetch_gap_cnt);
++		}
++
++		// MY_MODS_END
++
+ 		skb = e1000_copybreak(adapter, buffer_info, length, data);
+ 		if (!skb) {
+ 			unsigned int frag_len = e1000_frag_len(adapter);
+ 
++			// MY_MODS_START
++			
++			this_cpu_inc(packet_counter.nr_big_packets);
++			t0 = rx_ts();
+ 			skb = napi_build_skb(data - E1000_HEADROOM, frag_len);
++			if (t0 && skb) {
++				dt = ktime_get_ns() - t0;
++				this_cpu_add(rx_timing_data.build_skb_ns, dt);
++				this_cpu_inc(rx_timing_data.build_skb_cnt);
++				if (dt > __this_cpu_read(rx_timing_data.build_skb_max))
++					__this_cpu_write(rx_timing_data.build_skb_max, dt);
++			}
++
++			// MY_MODS_END
++			
++
+ 			if (!skb) {
+ 				adapter->alloc_rx_buff_failed++;
+ 				break;
+@@ -4396,8 +4541,10 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
+ 					 DMA_FROM_DEVICE);
+ 			buffer_info->dma = 0;
+ 			buffer_info->rxbuf.data = NULL;
++		}else{
++			this_cpu_inc(packet_counter.nr_small_packets);
+ 		}
+-
++		
+ 		if (++i == rx_ring->count)
+ 			i = 0;
+ 
+@@ -4417,7 +4564,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
+ 		 */
+ 		if (unlikely(!(status & E1000_RXD_STAT_EOP)))
+ 			adapter->discarding = true;
+-
++	
+ 		if (adapter->discarding) {
+ 			/* All receives must fit into a single buffer */
+ 			netdev_dbg(netdev, "Receive packet consumed multiple buffers\n");
+@@ -4486,6 +4633,14 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
+ 	adapter->total_rx_bytes += total_rx_bytes;
+ 	netdev->stats.rx_bytes += total_rx_bytes;
+ 	netdev->stats.rx_packets += total_rx_packets;
++
++	// MY MODS START 
++	this_cpu_write(in_clean_alloc, false); 
++	
++	update_limit(total_rx_packets);
++	update_dma_nid();
++	// MY MODS END
++
+ 	return cleaned;
+ }
+ 
+@@ -4570,6 +4725,10 @@ static void e1000_alloc_rx_buffers(struct e1000_adapter *adapter,
+ 	struct e1000_rx_buffer *buffer_info;
+ 	unsigned int i;
+ 	unsigned int bufsz = adapter->rx_buffer_len;
++	
++	// MY MODS START 
++	this_cpu_write(in_rx_alloc, true);
++	// MY MODS END
+ 
+ 	i = rx_ring->next_to_use;
+ 	buffer_info = &rx_ring->buffer_info[i];
+@@ -4669,6 +4828,9 @@ static void e1000_alloc_rx_buffers(struct e1000_adapter *adapter,
+ 		dma_wmb();
+ 		writel(i, hw->hw_addr + rx_ring->rdt);
+ 	}
++	// MY MODS START 
++	this_cpu_write(in_rx_alloc, false); 
++	// MY MODS END
+ }
+ 
+ /**
+diff --git a/include/net/rx_timing.h b/include/net/rx_timing.h
+new file mode 100644
+index 000000000000..7199992cfd8b
+--- /dev/null
++++ b/include/net/rx_timing.h
+@@ -0,0 +1,94 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _NET_RX_TIMING_H
++#define _NET_RX_TIMING_H
++
++#include <linux/ktime.h>
++#include <linux/percpu.h>
++
++#define POLICY_RESET_LIMIT 8192
++#define REDUCE_RATIO 9
++
++extern unsigned int numabreak;
++extern unsigned int dma_nid;
++
++struct policy_counters {
++    u32 nr_small_packets;
++    u32 nr_big_packets;
++    u32 nr_to_reset;
++};
++
++DECLARE_PER_CPU(struct policy_counters, packet_counter);
++
++struct rx_timing_pcpu {
++	/* --- Driver layer (e1000) --- */
++	u64 frag_alloc_ns;
++	u64 frag_alloc_cnt;
++	u64 frag_alloc_max;
++
++	u64 build_skb_ns;
++	u64 build_skb_cnt;
++	u64 build_skb_max;
++
++	u64 copybreak_ns;
++	u64 copybreak_cnt;
++	u64 copybreak_max;
++
++	u64 prefetch_gap_ns;
++	u64 prefetch_gap_cnt;
++
++	/* --- GRO layer --- */
++	u64 gro_ns;
++	u64 gro_cnt;
++	u64 gro_max;
++
++	/* --- Core stack --- */
++	u64 netif_core_ns;
++	u64 netif_core_cnt;
++	u64 netif_core_max;
++
++	/* --- IP layer --- */
++	u64 ip_rcv_ns;
++	u64 ip_rcv_cnt;
++	u64 ip_rcv_max;
++
++	/* --- TCP layer --- */
++	u64 tcp_rcv_ns;
++	u64 tcp_rcv_cnt;
++	u64 tcp_rcv_max;
++
++	/* --- Socket enqueue --- */
++	u64 tcp_queue_ns;
++	u64 tcp_queue_cnt;
++
++	/* --- Copy to user (process context) --- */
++	u64 copy_user_ns;
++	u64 copy_user_cnt;
++	u64 copy_user_max;
++
++	/* --- End-to-end softirq --- */
++	u64 e2e_softirq_ns;
++	u64 e2e_softirq_cnt;
++	u64 e2e_softirq_max;
++};
++
++DECLARE_PER_CPU(struct rx_timing_pcpu, rx_timing_data);
++DECLARE_PER_CPU(bool, in_clean_alloc); 
++DECLARE_PER_CPU(bool, in_rx_alloc); 
++extern bool rx_timing_on;
++
++static __always_inline u64 rx_ts(void)
++{
++	return likely(rx_timing_on) ? ktime_get_ns() : 0;
++}
++
++/* Helper to record a measurement */
++static __always_inline void rx_timing_record(u64 *total, u64 *cnt, u64 *max, u64 dt)
++{
++	this_cpu_add(*total, dt);
++	this_cpu_inc(*cnt);
++	if (max && dt > __this_cpu_read(*max))
++		__this_cpu_write(*max, dt);
++}
++
++#endif /* _NET_RX_TIMING_H */
++
+diff --git a/net/core/Makefile b/net/core/Makefile
+index 5857cec87b83..6b4f8158273a 100644
+--- a/net/core/Makefile
++++ b/net/core/Makefile
+@@ -4,15 +4,16 @@
+ #
+ 
+ obj-y := sock.o request_sock.o skbuff.o datagram.o stream.o scm.o \
+-	 gen_stats.o gen_estimator.o net_namespace.o secure_seq.o \
+-	 flow_dissector.o
++	gen_stats.o gen_estimator.o net_namespace.o secure_seq.o \
++	flow_dissector.o
+ 
+ obj-$(CONFIG_SYSCTL) += sysctl_net_core.o
+ 
+ obj-y		     += dev.o dev_addr_lists.o dst.o netevent.o \
+ 			neighbour.o rtnetlink.o utils.o link_watch.o filter.o \
+ 			sock_diag.o dev_ioctl.o tso.o sock_reuseport.o \
+-			fib_notifier.o xdp.o flow_offload.o gro.o
++			fib_notifier.o xdp.o flow_offload.o gro.o \
++			rx_timing.o
+ 
+ obj-$(CONFIG_NETDEV_ADDR_LIST_TEST) += dev_addr_lists_test.o
+ 
+diff --git a/net/core/dev.c b/net/core/dev.c
+index 70e06853ba25..36bcb524e0ad 100644
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -151,6 +151,10 @@
+ #include <linux/prandom.h>
+ #include <linux/once_lite.h>
+ 
++// MY_MODS_START
++#include <net/rx_timing.h>
++// MY_MODS_END
++
+ #include "dev.h"
+ #include "net-sysfs.h"
+ 
+@@ -5285,8 +5289,16 @@ static int __netif_receive_skb_core(struct sk_buff **pskb, bool pfmemalloc,
+ 	int ret = NET_RX_DROP;
+ 	__be16 type;
+ 
++// MY_MODS_START
++	u64 t0_core, dt_core;
++// MY_MODS_END
++
+ 	net_timestamp_check(!READ_ONCE(netdev_tstamp_prequeue), skb);
+ 
++// MY_MODS_START
++	t0_core = rx_ts();
++// MY_MODS_END
++
+ 	trace_netif_receive_skb(skb);
+ 
+ 	orig_dev = skb->dev;
+@@ -5474,6 +5486,20 @@ static int __netif_receive_skb_core(struct sk_buff **pskb, bool pfmemalloc,
+ 	 * Apparently *ppt_prev assignment above holds this invariant due to
+ 	 * skb dereferencing near it.
+ 	 */
++
++
++// MY_MODS_START
++
++	if (t0_core) {
++		dt_core = ktime_get_ns() - t0_core;
++		this_cpu_add(rx_timing_data.netif_core_ns, dt_core);
++		this_cpu_inc(rx_timing_data.netif_core_cnt);
++		if (dt_core > __this_cpu_read(rx_timing_data.netif_core_max))
++			__this_cpu_write(rx_timing_data.netif_core_max, dt_core);
++	}
++
++// MY_MODS_END
++
+ 	*pskb = skb;
+ 	return ret;
+ }
+diff --git a/net/core/gro.c b/net/core/gro.c
+index bc9451743307..8e95c84b5a3b 100644
+--- a/net/core/gro.c
++++ b/net/core/gro.c
+@@ -4,6 +4,10 @@
+ #include <net/busy_poll.h>
+ #include <trace/events/net.h>
+ 
++// MY_MODS_START
++#include <net/rx_timing.h>
++// MY_MODS_END
++
+ #define MAX_GRO_SKBS 8
+ 
+ /* This should be increased if a protocol with a bigger head is added. */
+@@ -635,22 +639,37 @@ static gro_result_t napi_skb_finish(struct napi_struct *napi,
+ 	return ret;
+ }
+ 
++// MY_MODS_START
++
+ gro_result_t napi_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
+ {
+ 	gro_result_t ret;
++	u64 t0, dt;
+ 
+ 	skb_mark_napi_id(skb, napi);
+ 	trace_napi_gro_receive_entry(skb);
+ 
+ 	skb_gro_reset_offset(skb, 0);
+ 
++	t0 = rx_ts();
+ 	ret = napi_skb_finish(napi, skb, dev_gro_receive(napi, skb));
++	if (t0) {
++		dt = ktime_get_ns() - t0;
++		this_cpu_add(rx_timing_data.gro_ns, dt);
++		this_cpu_inc(rx_timing_data.gro_cnt);
++		if (dt > __this_cpu_read(rx_timing_data.gro_max))
++			__this_cpu_write(rx_timing_data.gro_max, dt);
++	}	
++	
++
+ 	trace_napi_gro_receive_exit(ret);
+ 
+ 	return ret;
+ }
+ EXPORT_SYMBOL(napi_gro_receive);
+ 
++// MY_MODS_END
++
+ static void napi_reuse_skb(struct napi_struct *napi, struct sk_buff *skb)
+ {
+ 	if (unlikely(skb->pfmemalloc)) {
+diff --git a/net/core/rx_timing.c b/net/core/rx_timing.c
+new file mode 100644
+index 000000000000..b1d487097207
+--- /dev/null
++++ b/net/core/rx_timing.c
+@@ -0,0 +1,146 @@
++// SPDX-License-Identifier: GPL-2.0
++#include <net/rx_timing.h>
++#include <linux/module.h>
++#include <linux/debugfs.h>
++#include <linux/seq_file.h>
++#include <linux/string.h>
++
++DEFINE_PER_CPU(struct rx_timing_pcpu, rx_timing_data);
++EXPORT_PER_CPU_SYMBOL(rx_timing_data);
++
++bool rx_timing_on __read_mostly;
++EXPORT_SYMBOL(rx_timing_on);
++
++static struct dentry *rx_timing_dentry;
++
++/* Aggregate one field across all CPUs */
++#define AGG(field, out_total, out_max) do {				\
++	for_each_possible_cpu(_cpu) {					\
++		const struct rx_timing_pcpu *_t =			\
++			per_cpu_ptr(&rx_timing_data, _cpu);		\
++		out_total += READ_ONCE(_t->field);			\
++	}								\
++} while (0)
++
++#define AGG3(f_ns, f_cnt, f_max, o_ns, o_cnt, o_max) do {		\
++	for_each_possible_cpu(_cpu) {					\
++		const struct rx_timing_pcpu *_t =			\
++			per_cpu_ptr(&rx_timing_data, _cpu);		\
++		o_ns  += READ_ONCE(_t->f_ns);				\
++		o_cnt += READ_ONCE(_t->f_cnt);				\
++		if (READ_ONCE(_t->f_max) > o_max)			\
++			o_max = READ_ONCE(_t->f_max);			\
++	}								\
++} while (0)
++
++static int rx_timing_show(struct seq_file *m, void *v)
++{
++	int _cpu;
++
++#define SHOW3(label, f_ns, f_cnt, f_max) do {				\
++	u64 ns = 0, cnt = 0, mx = 0;					\
++	AGG3(f_ns, f_cnt, f_max, ns, cnt, mx);				\
++	seq_printf(m, "%-24s  %12llu  %12llu  %12llu\n",		\
++		   label, cnt, cnt ? ns / cnt : 0, mx);			\
++} while (0)
++
++#define SHOW2(label, f_ns, f_cnt) do {					\
++	u64 ns = 0, cnt = 0;						\
++	AGG(f_ns, ns, ns); AGG(f_cnt, cnt, cnt);			\
++	seq_printf(m, "%-24s  %12llu  %12llu  %12s\n",			\
++		   label, cnt, cnt ? ns / cnt : 0, "-");		\
++} while (0)
++
++	seq_puts(m, "RX stack timing (ns)\n");
++	seq_puts(m, "=========================================="
++		    "==============================\n");
++	seq_printf(m, "%-24s  %12s  %12s  %12s\n",
++		   "stage", "count", "avg_ns", "max_ns");
++	seq_printf(m, "%-24s  %12s  %12s  %12s\n",
++		   "-----", "-----", "------", "------");
++
++	/* Driver */
++	SHOW3("e1000_alloc_frag",     frag_alloc_ns, frag_alloc_cnt, frag_alloc_max);
++	SHOW3("napi_build_skb",       build_skb_ns,  build_skb_cnt,  build_skb_max);
++	SHOW3("copybreak_alloc",      copybreak_ns,  copybreak_cnt,  copybreak_max);
++	SHOW2("prefetch_gap",         prefetch_gap_ns, prefetch_gap_cnt);
++
++	seq_puts(m, "\n");
++
++	/* Stack */
++	SHOW3("napi_gro_receive",     gro_ns,         gro_cnt,         gro_max);
++	SHOW3("__netif_receive_core", netif_core_ns,   netif_core_cnt,  netif_core_max);
++	SHOW3("ip_rcv_core",          ip_rcv_ns,       ip_rcv_cnt,      ip_rcv_max);
++	SHOW3("tcp_v4_rcv",           tcp_rcv_ns,      tcp_rcv_cnt,     tcp_rcv_max);
++	SHOW2("tcp_queue_rcv",        tcp_queue_ns,    tcp_queue_cnt);
++	SHOW3("copy_to_user",         copy_user_ns,    copy_user_cnt,   copy_user_max);
++
++	seq_puts(m, "\n");
++
++	/* End-to-end */
++	SHOW3("e2e_softirq",          e2e_softirq_ns,  e2e_softirq_cnt, e2e_softirq_max);
++
++	seq_printf(m, "\nenabled: %d\n", rx_timing_on);
++
++#undef SHOW3
++#undef SHOW2
++	return 0;
++}
++
++static int rx_timing_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, rx_timing_show, NULL);
++}
++
++static ssize_t rx_timing_write(struct file *file, const char __user *ubuf,
++			       size_t count, loff_t *ppos)
++{
++	char buf[8];
++	int cpu;
++
++	if (count > sizeof(buf) - 1)
++		return -EINVAL;
++	if (copy_from_user(buf, ubuf, count))
++		return -EFAULT;
++	buf[count] = '\0';
++
++	if (buf[0] == '1') {
++		rx_timing_on = true;
++		pr_info("rx_timing: ON\n");
++	} else if (buf[0] == '0') {
++		rx_timing_on = false;
++		pr_info("rx_timing: OFF\n");
++	} else if (buf[0] == 'r' || buf[0] == 'R') {
++		for_each_possible_cpu(cpu)
++			memset(per_cpu_ptr(&rx_timing_data, cpu), 0,
++			       sizeof(struct rx_timing_pcpu));
++		pr_info("rx_timing: counters reset\n");
++	}
++	return count;
++}
++
++static const struct file_operations rx_timing_fops = {
++	.owner   = THIS_MODULE,
++	.open    = rx_timing_open,
++	.read    = seq_read,
++	.write   = rx_timing_write,
++	.llseek  = seq_lseek,
++	.release = single_release,
++};
++
++static int __init rx_timing_init(void)
++{
++	rx_timing_dentry = debugfs_create_file("rx_timing", 0666,
++					       NULL, NULL, &rx_timing_fops);
++	return 0;
++}
++
++static void __exit rx_timing_exit(void)
++{
++	debugfs_remove(rx_timing_dentry);
++}
++
++core_initcall(rx_timing_init);
++module_exit(rx_timing_exit);
++MODULE_LICENSE("GPL");
++
+diff --git a/net/ipv4/ip_input.c b/net/ipv4/ip_input.c
+index e880ce77322a..b2c9d9ef19d6 100644
+--- a/net/ipv4/ip_input.c
++++ b/net/ipv4/ip_input.c
+@@ -142,6 +142,10 @@
+ #include <linux/netlink.h>
+ #include <net/dst_metadata.h>
+ 
++// MY_MODS_START
++#include <net/rx_timing.h>
++// MY_MODS_END
++
+ /*
+  *	Process Router Attention IP option (RFC 2113)
+  */
+@@ -459,6 +463,12 @@ static struct sk_buff *ip_rcv_core(struct sk_buff *skb, struct net *net)
+ 	int drop_reason;
+ 	u32 len;
+ 
++// MY_MODS_START
++	u64 t0_ip;
++
++	t0_ip = rx_ts();
++// MY_MODS_END
++
+ 	/* When the interface is in promisc. mode, drop all the crap
+ 	 * that it receives, do not try to analyse it.
+ 	 */
+@@ -539,6 +549,16 @@ static struct sk_buff *ip_rcv_core(struct sk_buff *skb, struct net *net)
+ 	if (!skb_sk_is_prefetched(skb))
+ 		skb_orphan(skb);
+ 
++// MY_MODS_START
++	if (t0_ip) {
++		u64 dt_ip = ktime_get_ns() - t0_ip;
++		this_cpu_add(rx_timing_data.ip_rcv_ns, dt_ip);
++		this_cpu_inc(rx_timing_data.ip_rcv_cnt);
++		if (dt_ip > __this_cpu_read(rx_timing_data.ip_rcv_max))
++			__this_cpu_write(rx_timing_data.ip_rcv_max, dt_ip);
++	}
++// MY_MODS_END
++
+ 	return skb;
+ 
+ csum_error:
+diff --git a/net/ipv4/tcp.c b/net/ipv4/tcp.c
+index 4f2205756cfe..55cee455620f 100644
+--- a/net/ipv4/tcp.c
++++ b/net/ipv4/tcp.c
+@@ -280,6 +280,10 @@
+ #include <asm/ioctls.h>
+ #include <net/busy_poll.h>
+ 
++// MY_MODS_START
++#include <net/rx_timing.h>
++// MY_MODS_END
++
+ /* Track pending CMSGs. */
+ enum {
+ 	TCP_CMSG_INQ = 1,
+@@ -2597,8 +2601,20 @@ static int tcp_recvmsg_locked(struct sock *sk, struct msghdr *msg, size_t len,
+ 			}
+ 		}
+ 
++// MY_MODS_START
++
+ 		if (!(flags & MSG_TRUNC)) {
++			u64 t0_cp = rx_ts();
+ 			err = skb_copy_datagram_msg(skb, offset, msg, used);
++
++			if (t0_cp) {
++				u64 dt_cp = ktime_get_ns() - t0_cp;
++				this_cpu_add(rx_timing_data.copy_user_ns, dt_cp);
++				this_cpu_inc(rx_timing_data.copy_user_cnt);
++				if (dt_cp > __this_cpu_read(rx_timing_data.copy_user_max))
++					__this_cpu_write(rx_timing_data.copy_user_max, dt_cp);
++			}
++
+ 			if (err) {
+ 				/* Exception. Bailout! */
+ 				if (!copied)
+@@ -2607,6 +2623,8 @@ static int tcp_recvmsg_locked(struct sock *sk, struct msghdr *msg, size_t len,
+ 			}
+ 		}
+ 
++// MY_MODS_END
++
+ 		WRITE_ONCE(*seq, *seq + used);
+ 		copied += used;
+ 		len -= used;
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+index 0640453fce54..2a16e2896f39 100644
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -81,6 +81,10 @@
+ #include <net/busy_poll.h>
+ #include <net/mptcp.h>
+ 
++// MY_MODS_START
++#include <net/rx_timing.h>
++// MY_MODS_END
++
+ int sysctl_tcp_max_orphans __read_mostly = NR_FILE;
+ 
+ #define FLAG_DATA		0x01 /* Incoming frame contained data.		*/
+@@ -4930,12 +4934,16 @@ static void tcp_data_queue_ofo(struct sock *sk, struct sk_buff *skb)
+ 	}
+ }
+ 
++// MY_MODS_START
++
+ static int __must_check tcp_queue_rcv(struct sock *sk, struct sk_buff *skb,
+ 				      bool *fragstolen)
+ {
+ 	int eaten;
++	u64 t0_q, dt;
+ 	struct sk_buff *tail = skb_peek_tail(&sk->sk_receive_queue);
+ 
++	t0_q = rx_ts();
+ 	eaten = (tail &&
+ 		 tcp_try_coalesce(sk, tail,
+ 				  skb, fragstolen)) ? 1 : 0;
+@@ -4944,9 +4952,27 @@ static int __must_check tcp_queue_rcv(struct sock *sk, struct sk_buff *skb,
+ 		__skb_queue_tail(&sk->sk_receive_queue, skb);
+ 		skb_set_owner_r(skb, sk);
+ 	}
++
++	if (t0_q) {
++		dt = ktime_get_ns() - t0_q;
++		this_cpu_add(rx_timing_data.tcp_queue_ns, dt);
++		this_cpu_inc(rx_timing_data.tcp_queue_cnt);
++	}
++	/* End-to-end: read stamp set by e1000_receive_skb */
++	if (rx_timing_on && skb->tstamp) {
++		u64 e2e = ktime_get_ns() - skb->tstamp;
++		this_cpu_add(rx_timing_data.e2e_softirq_ns, e2e);
++		this_cpu_inc(rx_timing_data.e2e_softirq_cnt);
++		if (e2e > __this_cpu_read(rx_timing_data.e2e_softirq_max))
++			__this_cpu_write(rx_timing_data.e2e_softirq_max, e2e);
++		skb->tstamp = 0; /* clean up */
++	}
++
+ 	return eaten;
+ }
+ 
++// MY_MODS_END
++
+ int tcp_send_rcvq(struct sock *sk, struct msghdr *msg, size_t size)
+ {
+ 	struct sk_buff *skb;
+diff --git a/net/ipv4/tcp_ipv4.c b/net/ipv4/tcp_ipv4.c
+index da46357f501b..329771e5313f 100644
+--- a/net/ipv4/tcp_ipv4.c
++++ b/net/ipv4/tcp_ipv4.c
+@@ -83,6 +83,12 @@
+ 
+ #include <trace/events/tcp.h>
+ 
++
++// MY_MODS_START
++#include <net/rx_timing.h>
++// MY_MODS_END
++
++
+ #ifdef CONFIG_TCP_MD5SIG
+ static int tcp_v4_md5_hash_hdr(char *md5_hash, const struct tcp_md5sig_key *key,
+ 			       __be32 daddr, __be32 saddr, const struct tcphdr *th);
+@@ -1933,7 +1939,16 @@ int tcp_v4_rcv(struct sk_buff *skb)
+ 	struct sock *sk;
+ 	int ret;
+ 
++	// MY_MODS_START
++	u64 t0_tcp;
++	// MY_MODS_END
++
+ 	drop_reason = SKB_DROP_REASON_NOT_SPECIFIED;
++	
++	// MY_MODS_START
++	t0_tcp = rx_ts();
++	// MY_MODS_END
++
+ 	if (skb->pkt_type != PACKET_HOST)
+ 		goto discard_it;
+ 
+@@ -2096,6 +2111,17 @@ int tcp_v4_rcv(struct sk_buff *skb)
+ 	bh_unlock_sock(sk);
+ 
+ put_and_return:
++
++	// MY_MODS_START	
++	if (t0_tcp) {
++		u64 dt_tcp = ktime_get_ns() - t0_tcp;
++		this_cpu_add(rx_timing_data.tcp_rcv_ns, dt_tcp);
++		this_cpu_inc(rx_timing_data.tcp_rcv_cnt);
++		if (dt_tcp > __this_cpu_read(rx_timing_data.tcp_rcv_max))
++			__this_cpu_write(rx_timing_data.tcp_rcv_max, dt_tcp);
++	}
++	// MY_MODS_END
++
+ 	if (refcounted)
+ 		sock_put(sk);
+ 
+-- 
+2.43.0
+
