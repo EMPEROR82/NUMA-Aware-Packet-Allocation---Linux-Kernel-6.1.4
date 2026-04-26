@@ -1,4 +1,4 @@
-obj-m += proportion_based_policy.o
+obj-m += numabreak_policy.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)

@@ -2,12 +2,12 @@
 
 set -e
 
-MODULE="proportion_based_policy"
+MODULE="numabreak_policy"
 
 echo "[*] Checking e1000 is loaded (required)..."
 if ! lsmod | grep -q "^e1000 "; then
     echo "[!] ERROR: e1000 module is not loaded."
-    echo "    ${MODULE} requires e1000 (exports in_rx_alloc, in_clean_alloc, dma_nid)."
+    echo "    ${MODULE} requires e1000 (exports in_rx_alloc, in_clean_alloc, numabreak)."
     echo "    Load it first: sudo modprobe e1000"
     exit 1
 fi

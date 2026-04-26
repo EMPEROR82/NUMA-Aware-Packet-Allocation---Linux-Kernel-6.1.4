@@ -335,3 +335,93 @@ When not benchmarking, disable the timer overhead:
 ```bash
 echo 0 | sudo tee /sys/kernel/debug/rx_timing
 ```
+
+---
+
+## 9. Randomised Packet-Size Testing (`randomised_script.py`)
+
+### What It Does
+
+`randomised_script.py` is an alternative to `script.py` for situations where you want to test **throughput across a continuous range of packet sizes** rather than a fixed list. Instead of sweeping pre-defined sizes, it:
+
+1. Takes a `[min-size, max-size]` range from the user
+2. Randomly samples `--runs` packet sizes from that range using a **fixed seed** (`SEED = 42` by default)
+3. Runs one iperf3 test per sampled size (single stream, 10 s each by default)
+4. Writes per-run results and an AGGREGATE summary to a CSV file
+
+The fixed seed means the **same sequence of packet sizes is reproduced every time** you run with the same arguments — useful for comparing policies under identical load conditions.
+
+> **Key difference from `script.py`:** No parallel-streams or duration flags — it always uses 1 stream and 10-second runs. The randomness is over packet sizes, not configuration parameters. To change the duration or seed, edit the constants at the top of the file (`DURATION`, `SEED`).
+
+---
+
+### Usage
+
+```
+python3 randomised_script.py --min-size MIN --max-size MAX [--runs N] -o OUTPUT
+```
+
+**Constraint:** `1 <= min-size <= max-size`
+
+---
+
+### Examples
+
+```bash
+# 10 random sizes between 64 and 1024 bytes → 10 runs of 10s each
+python3 randomised_script.py --min-size 64 --max-size 1024 -o rand_baseline.csv
+
+# 20 random sizes in the small-packet range (stress test the numabreak threshold)
+python3 randomised_script.py --min-size 64 --max-size 512 --runs 20 -o rand_small.csv
+
+# Wide range sweep for the proportion-based policy
+python3 randomised_script.py --min-size 64 --max-size 8192 --runs 30 -o rand_proportion.csv
+```
+
+The script prints the full sampled sequence before starting, so you know exactly what will run:
+
+```
+Seed         : 42
+Packet range : [64, 1024] bytes
+Sampled sizes: [721, 389, 56, ...]
+Output file  : rand_baseline.csv
+```
+
+---
+
+### CSV Output Format
+
+```
+run_id,packet_size_bytes,seed,pkt_range_min,pkt_range_max,throughput_mbps
+1,721,42,64,1024,487.3210
+2,389,42,64,1024,512.8800
+...
+AGGREGATE,N/A,42,64,1024,avg=499.10;min=421.30;max=541.20;std=28.40
+```
+
+The `seed`, `pkt_range_min`, and `pkt_range_max` columns are written on every row so the CSV is self-documenting — you can reconstruct the exact test conditions from the file alone.
+
+---
+
+### Reproducibility
+
+The RNG is seeded once at startup with `SEED = 42`. To run a **different** random sequence, change the `SEED` constant at the top of the file:
+
+```python
+SEED = 42   # change this for a different but still reproducible sequence
+```
+
+Two runs with the same seed and same `--min-size`/`--max-size`/`--runs` arguments will always produce **identical packet-size sequences**, making it valid to compare results across policies.
+
+---
+
+### Plotting Randomised Results
+
+Use `analyse_results_gen.py` (client side) since filenames are freely chosen:
+
+```bash
+python3 analyse_results_gen.py --dir . --out rand_comparison
+# → rand_comparison_bar.png  (one bar per CSV, X-axis = filename)
+```
+
+For a scatter-style view (throughput vs. actual packet size), you can adapt `analyse.py` or plot manually from the CSV using the `packet_size_bytes` column.

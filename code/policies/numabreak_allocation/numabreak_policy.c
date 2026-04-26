@@ -12,7 +12,7 @@
 #include <linux/ip.h>
 #include <linux/tcp.h>
 
-static int slow_nid 	      = 1;
+static int slow_nid = 1;
 
 static int __alloc_pages_pre_handler(struct kprobe *p, struct pt_regs *regs)
 {
@@ -21,10 +21,6 @@ static int __alloc_pages_pre_handler(struct kprobe *p, struct pt_regs *regs)
 		regs->dx = dma_nid; 
 	else if (this_cpu_read(in_clean_alloc))
 		regs->dx = dma_nid;
-        /* XXX NOTE that although we are using dma_nid here, we don't intend to
-         * to use dma_nid semantically, but since we are coming from in_clean_alloc, 
-         * the values are such that it should be equal to dma_nid
-        */ 
 #endif
 	return 0;
 }
@@ -52,23 +48,23 @@ static struct kprobe skb_kp = {
 	.post_handler = NULL,
 };
 
-static int __init force_node_init(void)
+static int __init numabreak_policy_init(void)
 {
 	int ret;
 	
     ret = register_kprobe(&alloc_kp);
 	if (ret) {
-		pr_err("force_node: alloc_kp registration failed (%d)\n", ret);
+		pr_err("numabreak_policy: alloc_kp registration failed (%d)\n", ret);
 		goto err_ret;
 	}
 
 	ret = register_kprobe(&skb_kp);
 	if (ret) {
-		pr_err("force_node: skb_kp registration failed (%d)\n", ret);
+		pr_err("numabreak_policy: skb_kp registration failed (%d)\n", ret);
 		goto err_alloc_kp;
 	}
 
-	pr_info("force_node: module loaded (in_clean_alloc managed by e1000 driver)\n");
+	pr_info("numabreak_policy: module loaded (in_clean_alloc managed by e1000 driver)\n");
 	return 0;
 
 err_alloc_kp:
@@ -77,15 +73,15 @@ err_ret:
 	return ret;
 }
 
-static void __exit force_node_exit(void)
+static void __exit numabreak_policy_exit(void)
 {
 	unregister_kprobe(&skb_kp);
 	unregister_kprobe(&alloc_kp);
-	pr_info("force_node: module unloaded\n");
+	pr_info("numabreak_policy: module unloaded\n");
 }
 
-module_init(force_node_init);
-module_exit(force_node_exit);
+module_init(numabreak_policy_init);
+module_exit(numabreak_policy_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Kernel Hackers");
 MODULE_DESCRIPTION("Selective NUMA allocation for RX path using kprobes");
