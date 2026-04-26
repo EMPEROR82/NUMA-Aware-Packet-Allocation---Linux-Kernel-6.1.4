@@ -4423,8 +4423,9 @@ void update_limit(int packets_cleaned){
 	}else{
 		this_cpu_write(packet_counter.nr_to_reset, POLICY_RESET_LIMIT);
 		
-		u32 small_packets = this_cpu_read(packet_counter.nr_small_packets);
-		u32 big_packets = this_cpu_read(packet_counter.nr_big_packets);
+		u32 small_packets, big_packets;
+		small_packets = this_cpu_read(packet_counter.nr_small_packets);
+		big_packets = this_cpu_read(packet_counter.nr_big_packets);
 
 		this_cpu_write(packet_counter.nr_small_packets,(small_packets >> REDUCE_RATIO));
 		this_cpu_write(packet_counter.nr_big_packets,(big_packets >> REDUCE_RATIO));
@@ -4432,8 +4433,9 @@ void update_limit(int packets_cleaned){
 }
 
 void update_dma_nid(void){
-	u32 small_packets = this_cpu_read(packet_counter.nr_small_packets);
-	u32 big_packets = this_cpu_read(packet_counter.nr_big_packets);
+	u32 small_packets, big_packets;
+	small_packets = this_cpu_read(packet_counter.nr_small_packets);
+	big_packets = this_cpu_read(packet_counter.nr_big_packets);
 
 	if(small_packets > big_packets){
 		dma_nid = SLOW_NID;
