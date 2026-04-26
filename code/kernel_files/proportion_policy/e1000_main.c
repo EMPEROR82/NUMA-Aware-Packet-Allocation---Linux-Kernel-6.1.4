@@ -4459,7 +4459,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 	struct pci_dev *pdev = adapter->pdev;
 	struct e1000_rx_desc *rx_desc, *next_rxd;
 	struct e1000_rx_buffer *buffer_info, *next_buffer;
-	u32 length,small_packets, big_packets;
+	u32 length;
 	unsigned int i;
 	int cleaned_count = 0;
 	bool cleaned = false;
