@@ -26,7 +26,7 @@ unsigned int dma_nid = 0;
 EXPORT_SYMBOL(dma_nid);
 
 void update_limit(int packets_cleaned);
-void update_dma_nid();
+void update_dma_nid(void);
 // MY_MODS_END
 
 char e1000_driver_name[] = "e1000";
@@ -4431,7 +4431,7 @@ void update_limit(int packets_cleaned){
 	}
 }
 
-void update_dma_nid(){
+void update_dma_nid(void){
 	u32 small_packets = this_cpu_read(packet_counter.nr_small_packets);
 	u32 big_packets = this_cpu_read(packet_counter.nr_big_packets);
 
