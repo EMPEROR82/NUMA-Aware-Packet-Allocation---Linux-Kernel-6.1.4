@@ -4418,12 +4418,12 @@ static struct sk_buff *e1000_copybreak(struct e1000_adapter *adapter,
 
 // MY_MODS_START
 void update_limit(int packets_cleaned){
+	u32 small_packets, big_packets;
 	if(likely(this_cpu_read(packet_counter.nr_to_reset) > packets_cleaned)){
 		this_cpu_sub(packet_counter.nr_to_reset,packets_cleaned);
 	}else{
 		this_cpu_write(packet_counter.nr_to_reset, POLICY_RESET_LIMIT);
 		
-		u32 small_packets, big_packets;
 		small_packets = this_cpu_read(packet_counter.nr_small_packets);
 		big_packets = this_cpu_read(packet_counter.nr_big_packets);
 
