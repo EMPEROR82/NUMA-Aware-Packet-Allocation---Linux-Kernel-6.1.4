@@ -2,6 +2,7 @@
 #include <linux/kernel.h>
 #include <linux/kprobes.h>
 #include <linux/mm.h>
+#include <net/rx_timing.h>
 
 static int __kprobes before(struct kprobe *p, struct pt_regs *regs)
 {
