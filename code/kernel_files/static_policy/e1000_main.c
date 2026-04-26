@@ -4471,7 +4471,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 			// MY_MODS_START
 			
-			this_cpu_inc(packet_counter.nr_small_packets);
+			//this_cpu_inc(packet_counter.nr_small_packets);
 
 			t0 = rx_ts();
 			skb = napi_build_skb(data - E1000_HEADROOM, frag_len);
@@ -4497,8 +4497,6 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 					 DMA_FROM_DEVICE);
 			buffer_info->dma = 0;
 			buffer_info->rxbuf.data = NULL;
-		}else{
-			this_cpu_inc(packet_counter.nr_big_packets);
 		}
 		
 		if (++i == rx_ring->count)
