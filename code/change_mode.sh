@@ -56,6 +56,7 @@ if [[ "$RUN_MAKE" =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}Starting build...${NC}"
     make -j$(nproc)
     echo -e "\n${GREEN}Build complete. Next steps:${NC}"
+    echo -e "  First go to your linux source code folder"
     echo -e "  sudo make modules_install"
     echo -e "  sudo make install"
     echo -e "  sudo reboot"
