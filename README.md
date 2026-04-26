@@ -8,6 +8,7 @@
 
 ```
 .
+├── launch.sh
 ├── README.md
 ├── patches/                                        # Git-format kernel patches (one per policy)
 │   ├── 0001-e1000-Static-NUMA-Aware-rx-packets-allocation.patch
@@ -86,7 +87,7 @@
 
 | Component | Requirement |
 |-----------|-------------|
-| **OS** | Ubuntu 22.04 LTS (x86_64) |
+| **Kernel** | Linux-Kernel-6.1.4 (x86_64) |
 | **CPU** | x86-64, 2 NUMA nodes, ≥ 4 cores recommended |
 | **NIC** | Intel e1000 (QEMU/KVM default NIC) |
 | **Extra** | Host machine to run iperf3 client; VM as receiver |
@@ -100,6 +101,14 @@ sudo apt install -y build-essential libncurses-dev bison flex \
 pip3 install matplotlib pandas
 ```
 
+---
+### VM Launch Requirement (IMPORTANT)
+
+If you are running experiments inside a **virtual machine**, you **must launch the VM using the provided script**:
+
+```bash
+./launch.sh
+```
 ---
 
 ## Kernel Setup
